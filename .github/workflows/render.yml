@@ -1,0 +1,108 @@
+# Render de escenas de Blender (bpy por pip, Cycles en CPU) repartido en varias compus de GitHub.
+# Repo público: los minutos de Actions en runners estándar no se cobran.
+# Se lanza a mano (Actions > render > Run workflow) o con: gh workflow run render.yml -f escena=07-billetera
+#
+# Contrato de cada escena (escenas/<nombre>/escena.py):
+#   python escena.py --anim --start A --end B --samples N --escala E --carpeta frames
+#   -> escribe frames/f_0000.png, f_0001.png ... (número de cuadro absoluto, 30 fps)
+name: render
+
+on:
+  workflow_dispatch:
+    inputs:
+      escena:
+        description: "Carpeta dentro de escenas/"
+        required: true
+        default: "07-billetera"
+      inicio:
+        description: "Primer cuadro"
+        default: "0"
+      fin:
+        description: "Último cuadro (incluido)"
+        default: "329"
+      muestras:
+        description: "Muestras de Cycles (12 rápido · 24 normal · 48 fino)"
+        default: "24"
+      escala:
+        description: "Resolución (1 = 1080x1920 · 0.5 = 540x960)"
+        default: "1"
+      tramos:
+        description: "Compus en paralelo (máx. 20)"
+        default: "20"
+      fps:
+        description: "Cuadros por segundo del mp4"
+        default: "30"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matriz: ${{ steps.p.outputs.matriz }}
+    steps:
+      - id: p
+        env:
+          INI: ${{ inputs.inicio }}
+          FIN: ${{ inputs.fin }}
+          TRAMOS: ${{ inputs.tramos }}
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, os
+          a, b = int(os.environ["INI"]), int(os.environ["FIN"])
+          n = max(1, min(int(os.environ["TRAMOS"]), 20, b - a + 1))
+          paso = -(-(b - a + 1) // n)
+          tramos = [{"ini": i, "fin": min(i + paso - 1, b)} for i in range(a, b + 1, paso)]
+          print("matriz=" + json.dumps(tramos))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matriz) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Blender 4.2 (bpy) y librerías del sistema
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxi6 libxrender1 libxkbcommon0 libsm6 libgl1 libegl1
+          pip install --quiet "bpy==4.2.0" numpy
+      - name: render de los cuadros ${{ matrix.ini }} a ${{ matrix.fin }}
+        run: |
+          python "escenas/${{ inputs.escena }}/escena.py" --anim --start ${{ matrix.ini }} --end ${{ matrix.fin }} \
+            --samples "${{ inputs.muestras }}" --escala "${{ inputs.escala }}" --carpeta frames
+          ls frames | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cuadros-${{ matrix.ini }}
+          path: frames/*.png
+          retention-days: 2
+
+  armar:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cuadros-*
+          path: frames
+          merge-multiple: true
+      - name: mp4 H.264
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          ls frames | wc -l
+          ffmpeg -y -framerate "${{ inputs.fps }}" -start_number "${{ inputs.inicio }}" -i frames/f_%04d.png \
+            -c:v libx264 -preset medium -crf 15 -pix_fmt yuv420p -movflags +faststart "${{ inputs.escena }}.mp4"
+          ffprobe -v error -show_entries stream=nb_frames,r_frame_rate,width,height -of default=nw=1 "${{ inputs.escena }}.mp4"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: video
+          path: ${{ inputs.escena }}.mp4
+          retention-days: 14

@@ -1,0 +1,8 @@
+frames/
+salida/
+*.mp4
+*.png
+__pycache__/
+claves*
+*token*
+.env
