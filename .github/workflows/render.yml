@@ -96,11 +96,13 @@ jobs:
           merge-multiple: true
       - name: mp4 H.264
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          # ffmpeg estático por pip (apt-get update tardaba ~12 min)
+          pip install --quiet imageio-ffmpeg
+          FF=$(python3 -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
           ls frames | wc -l
-          ffmpeg -y -framerate "${{ inputs.fps }}" -start_number "${{ inputs.inicio }}" -i frames/f_%04d.png \
+          "$FF" -y -framerate "${{ inputs.fps }}" -start_number "${{ inputs.inicio }}" -i frames/f_%04d.png \
             -c:v libx264 -preset medium -crf 15 -pix_fmt yuv420p -movflags +faststart "${{ inputs.escena }}.mp4"
-          ffprobe -v error -show_entries stream=nb_frames,r_frame_rate,width,height -of default=nw=1 "${{ inputs.escena }}.mp4"
+          "$FF" -i "${{ inputs.escena }}.mp4" -f null - 2>&1 | grep -E "Stream|frame=" | tail -2
       - uses: actions/upload-artifact@v4
         with:
           name: video
